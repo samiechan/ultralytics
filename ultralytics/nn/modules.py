@@ -189,9 +189,11 @@ class C2f(nn.Module):
         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
     def forward(self, x):
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
-        return self.cv2(torch.cat(y, 1))
+        x = self.cv1(x)
+        x = [x, x[:, self.c:, ...]]
+        x.extend(m(x[-1]) for m in self.m)
+        x.pop(1)
+        return self.cv2(torch.cat(x, 1))
 
     def forward_split(self, x):
         y = list(self.cv1(x).split((self.c, self.c), 1))
@@ -410,16 +412,8 @@ class Detect(nn.Module):
         elif self.dynamic or self.shape != shape:
             self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
             self.shape = shape
-
-        x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
-        if self.export and self.format in ('saved_model', 'pb', 'tflite', 'edgetpu', 'tfjs'):  # avoid TF FlexSplitV ops
-            box = x_cat[:, :self.reg_max * 4]
-            cls = x_cat[:, self.reg_max * 4:]
-        else:
-            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
-        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
-        y = torch.cat((dbox, cls.sigmoid()), 1)
-        return y if self.export else (y, x)
+        pred = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2).permute(0, 2, 1)
+        return pred
 
     def bias_init(self):
         # Initialize Detect() biases, WARNING: requires stride availability
